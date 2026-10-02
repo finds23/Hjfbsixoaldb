@@ -1,0 +1,17 @@
+{
+  "name": "JKAnime",
+  "version": "1.0.0",
+  "scrapers": [
+    {
+      "id": "JKAnime",
+      "name": "JKAnime",
+      "description": "Streams de anime (Sub español) desde JKAnime vía Streamtape.",
+      "version": "1.0.0",
+      "author": "-",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/jkanime.js",
+      "enabled": true,
+      "contentLanguage": ["ja", "es"]
+    }
+  ]
+}
