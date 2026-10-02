@@ -10,7 +10,8 @@ var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, l
 // Activa/desactiva fuentes. Solo Streamtape esta probado.
 var ENABLED_SOURCES = {
   Streamtape: true,
-  Streamwish: false, // pendiente: falta el hash del script del embed
+  Streamwish: true,
+  Vidhide: true,     // sin probar: usa el mismo extractor que Streamwish; si falla se ignora
   Voe: false         // no reproducia en el episodio de prueba
 };
 
@@ -200,9 +201,55 @@ async function extractStreamtape(embedUrl) {
   return { url: url, headers: { "Referer": "https://streamtape.com/", "User-Agent": UA } };
 }
 
-async function extractStreamwish(embedUrl) {
-  throw new Error("Streamwish aun no implementado");
+// Desempaqueta scripts tipo eval(function(p,a,c,k,e,d){...}('payload',radix,count,'dict'.split('|')))
+function unpackPacker(src) {
+  var m = /\}\('([\s\S]*?)',\s*(\d+),\s*(\d+),\s*'([\s\S]*?)'\.split\('\|'\)/.exec(src);
+  if (!m) return null;
+  var p = m[1].replace(/\\'/g, "'").replace(/\\\\/g, "\\");
+  var radix = parseInt(m[2], 10), count = parseInt(m[3], 10), dict = m[4].split("|");
+  while (count--) {
+    if (dict[count]) p = p.replace(new RegExp("\\b" + count.toString(radix) + "\\b", "g"), dict[count]);
+  }
+  return p;
 }
+
+// Streamwish / StreamHG / Vidhide: la URL del video esta en "var links={hls2:..,hls3:..}" dentro de un script empaquetado
+function extractHlsFromHtml(html) {
+  var texts = [html];
+  var re = /eval\(function\(p,a,c,k,e,d\)[\s\S]*?\.split\('\|'\)[^\n]*?\)\)/g, m;
+  while ((m = re.exec(html)) !== null) {
+    try { var u = unpackPacker(m[0]); if (u) texts.unshift(u); } catch (e) { /* siguiente */ }
+  }
+  for (var i = 0; i < texts.length; i++) {
+    var lm = /var\s+links\s*=\s*(\{[\s\S]*?\})\s*;/.exec(texts[i]);
+    if (lm) {
+      try {
+        var links = JSON.parse(lm[1]);
+        // hls2 (.m3u8 directo) primero: el player cae a el cuando hls3/hls4 (master.txt) fallan
+        var best = links.hls2 || links.hls4 || links.hls3;
+        if (best) return best;
+      } catch (e) { /* seguir */ }
+    }
+    var fm = /https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/.exec(texts[i]);
+    if (fm) return fm[0];
+  }
+  return null;
+}
+
+async function extractPackedHls(embedUrl) {
+  var resp = await fetch(embedUrl, { headers: { "User-Agent": UA, "Referer": JK_BASE + "/" } });
+  if (!resp.ok) throw new Error("HTTP " + resp.status + " en " + embedUrl);
+  var html = await resp.text();
+  var finalUrl = resp.url || embedUrl;
+  var url = extractHlsFromHtml(html);
+  if (!url) throw new Error("No se encontro la URL HLS en el embed");
+  var origin;
+  try { origin = new URL(finalUrl).origin; } catch (e) { origin = "https://flaswish.com"; }
+  return { url: url, type: "hls", headers: { "Referer": origin + "/", "Origin": origin, "User-Agent": UA } };
+}
+
+async function extractStreamwish(embedUrl) { return extractPackedHls(embedUrl); }
+async function extractVidhide(embedUrl) { return extractPackedHls(embedUrl); }
 
 async function extractVoe(embedUrl) {
   throw new Error("Voe aun no implementado");
@@ -211,6 +258,7 @@ async function extractVoe(embedUrl) {
 var ALL_SOURCES = {
   Streamtape: { label: "Streamtape", extract: extractStreamtape },
   Streamwish: { label: "Streamwish", extract: extractStreamwish },
+  Vidhide: { label: "Vidhide", extract: extractVidhide },
   Voe: { label: "Voe", extract: extractVoe }
 };
 var SOURCE_EXTRACTORS = {};
@@ -284,4 +332,3 @@ async function getStreams(tmdbId, type, season, episode) {
 }
 
 exports.getStreams = getStreams;
-      
