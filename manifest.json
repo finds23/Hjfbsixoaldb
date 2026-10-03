@@ -1,15 +1,15 @@
 {
-  "name": "JKAnime",
+  "name": "asd",
   "version": "1.1.0",
   "scrapers": [
     {
-      "id": "JKAnime",
-      "name": "JKAnime",
+      "id": "asd",
+      "name": "asd",
       "description": "Streams de anime (Sub español) desde JKAnime vía Streamtape y Streamwish.",
       "version": "1.1.0",
       "author": "-",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/jkanime.js",
+      "filename": "providers/asd.js",
       "enabled": true,
       "contentLanguage": ["ja", "es"]
     }
