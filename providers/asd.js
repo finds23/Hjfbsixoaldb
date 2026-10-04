@@ -11,6 +11,7 @@ var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, l
 var ENABLED_SOURCES = {
   Streamtape: true,
   Streamwish: true,
+  JKPlayer: true,    // reproductores propios de JKAnime (Desu / Magi): iframe jkplayer/um -> m3u8
   Vidhide: true,     // sin probar: usa el mismo extractor que Streamwish; si falla se ignora
   Voe: false         // no reproducia en el episodio de prueba
 };
@@ -168,15 +169,28 @@ async function getEpisodeServers(slug, epNumber) {
   var list;
   try { list = JSON.parse(m[1]); } catch (e) { return []; }
   var out = [];
+  // El idioma esta junto al titulo del episodio ("Espanol latino"); el <title> y los meta dicen "Sub" siempre, no sirven.
+  var zone = /<h1[^>]*>[\s\S]*?<\/h1>([\s\S]{0,800}?)Reproductor/i.exec(html);
+  var latino = !!(zone && /latino/i.test(zone[1]));
   list.forEach(function (s) {
     if (!s || !s.remote || !s.server) return;
     try {
       var embed = b64decode(s.remote).trim();
+      if (/^\/(?!\/)/.test(embed)) embed = JK_BASE + embed;
       if (/^https?:\/\//i.test(embed) || /^\/\//.test(embed)) {
-        out.push({ name: String(s.server), url: embed.indexOf("//") === 0 ? "https:" + embed : embed });
+        out.push({ name: String(s.server), url: embed.indexOf("//") === 0 ? "https:" + embed : embed, latino: latino, page: url });
       }
     } catch (e) { /* servidor ignorado */ }
   });
+  // Reproductores propios que vienen como <iframe src=".../jkplayer/um..."> en la pagina del episodio
+  var ifr = /<iframe[^>]+src=["']([^"']*\/jkplayer\/umv?[^"']*)["']/gi, im;
+  while ((im = ifr.exec(html)) !== null) {
+    var iu = im[1].replace(/&amp;/g, "&");
+    if (/^\/(?!\/)/.test(iu)) iu = JK_BASE + iu;
+    else if (iu.indexOf("//") === 0) iu = "https:" + iu;
+    var dup = out.some(function (o) { return o.url === iu; });
+    if (!dup) out.push({ name: "JKPlayer", url: iu, latino: latino, page: url });
+  }
   return out;
 }
 
@@ -248,6 +262,25 @@ async function extractPackedHls(embedUrl) {
   return { url: url, type: "hls", headers: { "Referer": origin + "/", "Origin": origin, "User-Agent": UA } };
 }
 
+// Reproductor propio de JKAnime (Desu / Magi): la pagina del iframe trae el .m3u8 en un objeto de configuracion
+async function extractJkPlayer(embedUrl, ctx) {
+  var referer = (ctx && ctx.referer) || (JK_BASE + "/");
+  var resp = await fetch(embedUrl, { headers: { "User-Agent": UA, "Referer": referer, "Accept": "text/html,*/*" } });
+  if (!resp.ok) throw new Error("HTTP " + resp.status + " en el reproductor de JKAnime");
+  var html = (await resp.text()).replace(/\\u0026/gi, "&").replace(/\\\//g, "/").replace(/&amp;/g, "&");
+  var m = /\burl\s*:\s*["'](https?:\/\/[^"']+?\.m3u8(?:\?[^"']*)?)["']/i.exec(html)
+    || /(?:file|src)\s*:\s*["'](https?:\/\/[^"']+?\.m3u8(?:\?[^"']*)?)["']/i.exec(html)
+    || /["'](https?:\/\/[^"']+?\.m3u8(?:\?[^"']*)?)["']/i.exec(html);
+  if (!m) throw new Error("No se encontro el .m3u8 en el reproductor de JKAnime");
+  var origin = JK_BASE;
+  try { origin = new URL(embedUrl).origin; } catch (e) { /* se mantiene JK_BASE */ }
+  return {
+    url: m[1],
+    type: "hls",
+    headers: { "Accept": "*/*", "Origin": origin, "Referer": embedUrl, "User-Agent": UA }
+  };
+}
+
 async function extractStreamwish(embedUrl) { return extractPackedHls(embedUrl); }
 async function extractVidhide(embedUrl) { return extractPackedHls(embedUrl); }
 
@@ -258,6 +291,7 @@ async function extractVoe(embedUrl) {
 var ALL_SOURCES = {
   Streamtape: { label: "Streamtape", extract: extractStreamtape },
   Streamwish: { label: "Streamwish", extract: extractStreamwish },
+  JKPlayer: { label: "JKPlayer", extract: extractJkPlayer },
   Vidhide: { label: "Vidhide", extract: extractVidhide },
   Voe: { label: "Voe", extract: extractVoe }
 };
@@ -266,6 +300,7 @@ Object.keys(ALL_SOURCES).forEach(function (k) { if (ENABLED_SOURCES[k]) SOURCE_E
 
 function findSourceKey(serverName) {
   var n = norm(serverName);
+  if (n === "desu" || n === "magi") n = "jkplayer";
   return Object.keys(SOURCE_EXTRACTORS).find(function (k) { return n.indexOf(k.toLowerCase()) !== -1; });
 }
 
@@ -297,20 +332,21 @@ async function getStreams(tmdbId, type, season, episode) {
     var epNumber = type === "movie" ? 1 : (episode !== undefined ? Number(episode) : 1);
     var servers = await getEpisodeServers(match.slug, epNumber);
     if (servers.length === 0) return [];
+    console.log("[JKAnime] servidores del episodio: " + servers.map(function (x) { return x.name; }).join(", "));
 
     var jobs = servers.map(async function (server) {
       var key = findSourceKey(server.name);
       if (!key) return null;
       var source = SOURCE_EXTRACTORS[key];
       try {
-        var resolved = await source.extract(server.url);
+        var resolved = await source.extract(server.url, { referer: server.page });
         var list = Array.isArray(resolved) ? resolved : [resolved];
         return list.map(function (v) {
           var o = {
             name: "JKAnime",
             title: "",
             url: v.url,
-            quality: "\uD83D\uDCFA " + source.label + "\n1080p | WEB-DL | Anime\n\uD83C\uDDEF\uD83C\uDDF5 JAPON\u00C9S \u00B7 \uD83C\uDDF2\uD83C\uDDFD Sub",
+            quality: "\uD83D\uDCFA " + source.label + "\n1080p | WEB-DL | Anime\n" + (server.latino ? "\uD83C\uDDF2\uD83C\uDDFD LATINO" : "\uD83C\uDDEF\uD83C\uDDF5 JAPON\u00C9S \u00B7 \uD83C\uDDF2\uD83C\uDDFD Sub"),
             headers: v.headers
           };
           if (v.type) o.type = v.type;
@@ -323,6 +359,7 @@ async function getStreams(tmdbId, type, season, episode) {
     });
     var results = await Promise.all(jobs);
     var final = [].concat.apply([], results.filter(Boolean));
+    if (final.length === 0) console.warn("[JKAnime] ningun servidor soportado (activos: " + Object.keys(SOURCE_EXTRACTORS).join(", ") + ")");
     console.log("[JKAnime] " + final.length + " streams");
     return final;
   } catch (e) {
